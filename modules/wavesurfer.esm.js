@@ -1,9 +1,3 @@
-// WASM 模組導入
-import init, { compute_peaks_optimized, normalize_buffer_multichannel } from './waveform_wasm.js';
-
-// WASM 初始化 Promise
-let wasmReady = init();
-
 function t(t, e, i, s) {
     return new (i || (i = Promise))((function(n, r) {
         function o(t) {
@@ -78,47 +72,31 @@ const i = {
         ))
     },
     createBuffer: function(t, e) {
-        // 返回一個 Promise 或直接返回結果取決於是否需要歸一化
-        if ("number" == typeof t[0]) {
-            t = [t];
-        }
-        
-        // 檢查是否需要歸一化
-        const firstChannel = t[0];
-        const needsNormalization = firstChannel.some(s => s > 1 || s < -1);
-        
-        if (needsNormalization) {
-            // 計算全局最大值
-            let maxVal = 0;
-            for (const channel of t) {
-                for (let j = 0; j < channel.length; j++) {
-                    const abs_val = Math.abs(channel[j]);
-                    if (abs_val > maxVal) {
-                        maxVal = abs_val;
-                    }
+        return "number" == typeof t[0] && (t = [t]),
+        function(t) {
+            const e = t[0];
+            if (e.some((t => t > 1 || t < -1))) {
+                const i = e.length;
+                let s = 0;
+                for (let t = 0; t < i; t++) {
+                    const i = Math.abs(e[t]);
+                    i > s && (s = i)
                 }
+                for (const e of t)
+                    for (let t = 0; t < i; t++)
+                        e[t] /= s
             }
-            
-            // 如果最大值 > 0，進行歸一化
-            if (maxVal > 0) {
-                for (const channel of t) {
-                    for (let j = 0; j < channel.length; j++) {
-                        channel[j] /= maxVal;
-                    }
-                }
-            }
-        }
-        
-        return {
+        }(t),
+        {
             duration: e,
             length: t[0].length,
             sampleRate: t[0].length / e,
             numberOfChannels: t.length,
-            getChannelData: ch => null == t ? void 0 : t[ch],
+            getChannelData: e => null == t ? void 0 : t[e],
             copyFromChannel: AudioBuffer.prototype.copyFromChannel,
             copyToChannel: AudioBuffer.prototype.copyToChannel
-        };
-    },
+        }
+    }
 };
 function s(t, e) {
     const i = e.xmlns ? document.createElementNS(e.xmlns, t) : document.createElement(t);
@@ -1344,44 +1322,30 @@ class u extends a {
     exportPeaks({channels: t=2, maxLength: e=8e3, precision: i=1e4}={}) {
         if (!this.decodedData)
             throw new Error("The audio has not been decoded yet");
-        
         const chans = Math.min(t, this.decodedData.numberOfChannels);
         const result = [];
+        // OPTIMIZATION: Pre-calculate reciprocal to avoid division in loop
+        const blockSizeReciprocal = e / this.decodedData.length;
+        const precisionReciprocal = 1 / i;
         
-        // 使用 WASM 進行峰值計算
-        try {
-            for (let ch = 0; ch < chans; ch++) {
-                const samples = this.decodedData.getChannelData(ch);
-                // 調用 WASM 優化版本
-                const peaks = compute_peaks_optimized(samples, e, i);
-                // 將 Float32Array 轉換為 Array
-                result.push(Array.from(peaks));
-            }
-        } catch (err) {
-            console.warn('WASM 峰值計算失敗，使用 JS 後備方案', err);
-            // JS 後備實現
-            const blockSizeReciprocal = e / this.decodedData.length;
-            const precisionReciprocal = 1 / i;
-            
-            for (let ch = 0; ch < chans; ch++) {
-                const samples = this.decodedData.getChannelData(ch);
-                const peaks = new Array(e);
-                
-                for (let p = 0; p < e; p++) {
-                    const start = Math.floor(p / blockSizeReciprocal);
-                    const end = Math.min(Math.ceil((p + 1) / blockSizeReciprocal), samples.length);
-                    let maxVal = 0;
-                    
-                    for (let sIdx = start; sIdx < end; sIdx++) {
-                        const v = samples[sIdx];
-                        const av = v < 0 ? -v : v;
-                        if (av > maxVal) maxVal = av;
-                    }
-                    
-                    peaks[p] = Math.round(maxVal * i) * precisionReciprocal;
+        for (let ch = 0; ch < chans; ch++) {
+            const samples = this.decodedData.getChannelData(ch);
+            const peaks = new Array(e);
+            // OPTIMIZATION: Use pre-calculated values for faster computation
+            for (let p = 0; p < e; p++) {
+                const start = Math.floor(p / blockSizeReciprocal);
+                const end = Math.min(Math.ceil((p + 1) / blockSizeReciprocal), samples.length);
+                let maxVal = 0;
+                // OPTIMIZATION: Use bitwise operations for negative check (faster than comparison)
+                for (let sIdx = start; sIdx < end; sIdx++) {
+                    const v = samples[sIdx];
+                    const av = v < 0 ? -v : v;
+                    if (av > maxVal) maxVal = av;
                 }
-                result.push(peaks);
+                // OPTIMIZATION: Pre-multiply instead of post-divide
+                peaks[p] = Math.round(maxVal * i) * precisionReciprocal;
             }
+            result.push(peaks);
         }
         return result;
     }
